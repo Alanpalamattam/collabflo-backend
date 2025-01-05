@@ -13,6 +13,7 @@ import aiRoutes from './routes/ai';
 import lintRoutes from './routes/lint';
 import { exec } from "child_process";
 import userRoutes from "./routes/userRoutes";
+import roomRoutes from "./routes/roomRoutes";
 
 dotenv.config();
 
@@ -52,6 +53,7 @@ mongoose.connect(mongoUri, {
 app.use('/api/lint', lintRoutes);
 app.use('/api/ai', aiRoutes);
 app.use('/api/user', userRoutes);
+app.use('/api/room', roomRoutes);
 app.use(express.static(path.join(__dirname, "public")));
 
 // Global error handler
