@@ -34,5 +34,24 @@ router.post('/saveRoom', async (req, res) => {
     res.status(500).json({ success: false, error: 'Failed to save room data' });
   }
 });
-
+// In your backend routes
+router.get('/user-rooms/:username', async (req, res) => {
+    try {
+      const { username } = req.params;
+      const rooms = await Room.find({ 
+        participants: username 
+      }).sort({ createdAt: -1 });
+      
+      res.status(200).json({ 
+        success: true, 
+        rooms 
+      });
+    } catch (error) {
+      console.error('Error fetching user rooms:', error);
+      res.status(500).json({ 
+        success: false, 
+        message: 'Failed to fetch rooms' 
+      });
+    }
+  });
 export default router;
