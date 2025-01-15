@@ -14,6 +14,7 @@ import lintRoutes from './routes/lint';
 import { exec } from "child_process";
 import userRoutes from "./routes/userRoutes";
 import roomRoutes from "./routes/roomRoutes";
+import { Message } from './models/Message';
 
 dotenv.config();
 
@@ -25,7 +26,8 @@ const corsOptions = {
 };
 
 app.use(cors(corsOptions));
-app.use(express.json());
+app.use(express.json({ limit: '50mb' })); // Increased limit for file uploads
+app.use(express.static(path.join(__dirname, "public")));
 
 // MongoDB Connection
 const mongoUri: string | undefined = process.env.MONGO_URI;
@@ -339,6 +341,44 @@ io.on("connection", (socket) => {
 
   socket.on("error", (err) => {
     console.error("Socket error:", err);
+  });
+
+  // Add new chat message handling with MongoDB support
+  socket.on("chat_message", async (data) => {
+    const { message, roomId, attachments } = data;
+    
+    // Broadcast the message to the room
+    io.to(roomId).emit("message_received", {
+        sender: socket.id,
+        content: message,
+        attachments,
+        timestamp: new Date()
+    });
+
+    // Save to MongoDB
+    try {
+        const newMessage = new Message({
+            sender: socket.id,
+            content: message,
+            attachments,
+            timestamp: new Date(),
+            roomId
+        });
+        await newMessage.save();
+    } catch (error) {
+        console.error('Error saving message:', error);
+    }
+  });
+
+  // Add typing indicators
+  socket.on("typing", (data) => {
+    const { roomId, username } = data;
+    socket.broadcast.to(roomId).emit("user_typing", { username });
+  });
+
+  socket.on("stop_typing", (data) => {
+    const { roomId, username } = data;
+    socket.broadcast.to(roomId).emit("user_stopped_typing", { username });
   });
 });
 
