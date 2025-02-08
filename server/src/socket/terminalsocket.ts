@@ -12,6 +12,7 @@ import * as os from 'os';
 
 interface reactTemplates {
     'package.json': string;
+    'index.html': string;
     'src/App.tsx': string;
     'src/main.tsx': string;
     'src/vite-env.d.ts': string;
@@ -21,6 +22,19 @@ interface reactTemplates {
     '.gitignore': string;
 }
 const reactTemplates = {
+    'index.html': `
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>React App</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>`,
     'package.json': `{
         "name": "my-react-app",
         "private": true,
@@ -70,12 +84,31 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
     <React.StrictMode><App /></React.StrictMode>
 )`,
     'src/vite-env.d.ts': `/// <reference types="vite/client" />`,
-    'vite.config.ts': `import { defineConfig } from 'vite'
-import react from '@vitejs/plugin-react'
-
-export default defineConfig({
-    plugins: [react()],
-})`,
+    'vite.config.ts': `
+    import { defineConfig } from 'vite'
+    import react from '@vitejs/plugin-react'
+    import path from 'path'
+    
+    export default defineConfig({
+        plugins: [react()],
+        server: {
+            host: '0.0.0.0',
+            port: 5174,
+            strictPort: true,
+            hmr: {
+                clientPort: 5174
+            }
+        },
+        build: {
+            outDir: 'dist',
+            emptyOutDir: true
+        },
+        resolve: {
+            alias: {
+                '@': path.resolve(__dirname, './src')
+            }
+        }
+    })`,
     'tsconfig.json': `{
         "compilerOptions": {
             "target": "ES2020",
@@ -138,6 +171,10 @@ interface TerminalCommand {
 }
 
 export function setupTerminalSocket(io: Server) {
+    // Add at the start of setupTerminalSocket
+    function getViteProjectPath(workspacePath: string, projectName: string) {
+    return path.join(workspacePath, projectName);
+}
     io.on('connection', (socket: Socket) => {
         let virtualDirectory = "/";
         let workspacePath = path.join(os.homedir(), 'CodeSyncProjects', 'default');
@@ -409,38 +446,68 @@ export function setupTerminalSocket(io: Server) {
                     const projectName = cwd.split('/').filter(Boolean).pop();
                     const projectPath = path.join(workspacePath, projectName || '');
                     
-                    console.log('Starting dev server in:', projectPath);
-                
                     try {
+                        // Verify directory exists
                         const stats = await fs.stat(projectPath);
-                if (!stats.isDirectory()) {
-                   throw new Error(`Project directory ${projectPath} not found`);
-                   }
-
-                const devServer = spawn('npm', ['run', 'dev'], {
-                cwd: projectPath, // Ensure vite runs in project directory
-                shell: true,
-                env: { 
-                   ...Process.env, 
-                   FORCE_COLOR: 'true',
-                   // Set vite to use project directory
-                   VITE_CWD: projectPath,
-                   PWD: projectPath
-            }
-        });
-                        // Use npx to run vite
-                        // const devServer = spawn('npx', ['vite'], {
-                        //     cwd: projectPath,
-                        //     shell: true,
-                        //     env: { 
-                        //         ...Process.env, 
-                        //         FORCE_COLOR: 'true',
-                        //         PATH: `${projectPath}/node_modules/.bin:${Process.env.PATH}`
-                        //     }
-                        // });
+                        if (!stats.isDirectory()) {
+                            throw new Error(`Project directory ${projectPath} not found`);
+                        }
+                
+                        // Create vite config that forces cache directory inside node_modules
+                        const viteConfigContent = `
+                import { defineConfig } from 'vite'
+                import react from '@vitejs/plugin-react'
+                import path from 'path'
+                
+                export default defineConfig({
+                    plugins: [react()],
+                    server: {
+                        host: '0.0.0.0',
+                        port: 5174,
+                        strictPort: true,
+                        hmr: true
+                    },
+                    cacheDir: path.resolve('node_modules/.vite'),
+                    publicDir: path.resolve('public'),
+                    root: process.cwd(),
+                    clearScreen: false
+                })`;
+                
+                        // Write vite config to project directory
+                        await fs.writeFile(path.join(projectPath, 'vite.config.ts'), viteConfigContent);
+                
+                        // Ensure .vite goes into node_modules by setting working directory
+                        const devServer = spawn('npx', ['vite', 'serve', '.', '--host'], {
+                            cwd: projectPath,
+                            shell: true,
+                            env: { 
+                                ...Process.env,
+                                FORCE_COLOR: 'true',
+                                VITE_CWD: projectPath,
+                                PWD: projectPath,
+                                NODE_ENV: 'development',
+                                // Force vite to use project's node_modules
+                                NODE_PATH: path.join(projectPath, 'node_modules')
+                            }
+                        });
+                
+                        let serverStarted = false;
+                        let serverUrl = '';
                 
                         devServer.stdout?.on('data', (data: Buffer) => {
                             const output = data.toString();
+                            console.log('Server output:', output);
+                            
+                            if (output.includes('Local:') || output.includes('Network:')) {
+                                const urlMatch = output.match(/https?:\/\/\S+/);
+                                if (urlMatch) {
+                                    serverUrl = urlMatch[0];
+                                    serverStarted = true;
+                                    socket.emit('terminal:output', { 
+                                        data: `\nServer running at ${serverUrl}\n` 
+                                    });
+                                }
+                            }
                             socket.emit('terminal:output', { data: output });
                         });
                 
@@ -450,16 +517,26 @@ export function setupTerminalSocket(io: Server) {
                         });
                 
                         devServer.on('close', (code: number | null) => {
+                            if (!serverStarted) {
+                                socket.emit('terminal:output', { 
+                                    data: '\nDev server failed to start. Check for port conflicts.\n' 
+                                });
+                            }
                             socket.emit('terminal:output', { 
                                 data: `\nDev server stopped with code ${code}\n` 
                             });
                             socket.emit('terminal:ready');
                         });
                 
+                        // Clean up on socket disconnect
+                        socket.on('disconnect', () => {
+                            devServer.kill();
+                        });
+                
                     } catch (error) {
                         console.error('Error starting dev server:', error);
                         socket.emit('terminal:output', { 
-                            data: `Error starting dev server: ${error}\n` 
+                            data: `Error: ${error instanceof Error ? error.message : 'Unknown error'}\n` 
                         });
                         socket.emit('terminal:ready');
                     }
