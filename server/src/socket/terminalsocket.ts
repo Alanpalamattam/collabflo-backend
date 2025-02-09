@@ -36,27 +36,27 @@ const reactTemplates = {
   </body>
 </html>`,
     'package.json': `{
-        "name": "my-react-app",
-        "private": true,
-        "version": "0.0.0",
-        "type": "module",
-        "scripts": {
-            "dev": "vite",
-            "build": "vite build",
-            "preview": "vite preview"
-        },
-        "dependencies": {
-            "react": "^18.2.0",
-            "react-dom": "^18.2.0"
-        },
-        "devDependencies": {
-            "@types/react": "^18.2.0",
-            "@types/react-dom": "^18.2.0",
-            "@vitejs/plugin-react": "^4.0.0",
-            "typescript": "^5.0.2",
-            "vite": "^4.4.5"
-        }
-    }`,
+    "name": "my-react-app",
+    "private": true,
+    "version": "0.0.0",
+    "type": "module",
+    "scripts": {
+        "dev": "vite",
+        "build": "vite build",
+        "preview": "vite preview"
+    },
+    "dependencies": {
+        "react": "^18.2.0",
+        "react-dom": "^18.2.0",
+        "vite": "^4.4.5",
+        "@vitejs/plugin-react": "^4.0.0"
+    },
+    "devDependencies": {
+        "@types/react": "^18.2.0",
+        "@types/react-dom": "^18.2.0",
+        "typescript": "^5.0.2"
+    }
+}`,
     'src/App.tsx': `import React from 'react'
 function App() {
     return (
@@ -192,7 +192,6 @@ export function setupTerminalSocket(io: Server) {
         };
 
         // Initialize workspace when socket connects
-        initializeWorkspace();
 
         // socket.on(SocketEvent.JOIN_REQUEST, async ({ roomId: joinRoomId }) => {
         //     try {
@@ -444,97 +443,117 @@ export function setupTerminalSocket(io: Server) {
             
                 if (command.startsWith('npm run dev')) {
                     const projectName = cwd.split('/').filter(Boolean).pop();
-                    const projectPath = path.join(workspacePath, projectName || '');
+                    const absoluteProjectPath = path.resolve(workspacePath, projectName || '');
                     
                     try {
-                        // Verify directory exists
-                        const stats = await fs.stat(projectPath);
-                        if (!stats.isDirectory()) {
-                            throw new Error(`Project directory ${projectPath} not found`);
-                        }
+                        // Verify project exists
+                        await fs.access(absoluteProjectPath);
                 
-                        // Create vite config that forces cache directory inside node_modules
-                        const viteConfigContent = `
-                import { defineConfig } from 'vite'
-                import react from '@vitejs/plugin-react'
-                import path from 'path'
+                        // Create a Vite configuration that uses absolute paths
+                        const viteConfig = `
+                        import { defineConfig } from 'vite'
+                        import react from '@vitejs/plugin-react'
+                        import path from 'path'
+                        
+                        export default defineConfig({
+                            plugins: [react()],
+                            root: '${absoluteProjectPath.replace(/\\/g, '/')}',
+                            publicDir: path.resolve('${absoluteProjectPath.replace(/\\/g, '/')}', 'public'),
+                            server: {
+                                host: '0.0.0.0',
+                                port: 5174,
+                                strictPort: true,
+                                hmr: {
+                                    clientPort: 5174
+                                }
+                            },
+                            resolve: {
+                                alias: {
+                                    '@': path.resolve('${absoluteProjectPath.replace(/\\/g, '/')}', 'src')
+                                }
+                            },
+                            optimizeDeps: {
+                                force: true
+                            },
+                            cacheDir: path.resolve('${absoluteProjectPath.replace(/\\/g, '/')}', 'node_modules/.vite')
+                        })`;
                 
-                export default defineConfig({
-                    plugins: [react()],
-                    server: {
-                        host: '0.0.0.0',
-                        port: 5174,
-                        strictPort: true,
-                        hmr: true
-                    },
-                    cacheDir: path.resolve('node_modules/.vite'),
-                    publicDir: path.resolve('public'),
-                    root: process.cwd(),
-                    clearScreen: false
-                })`;
+                        // Write the config
+                        await fs.writeFile(
+                            path.join(absoluteProjectPath, 'vite.config.ts'), 
+                            viteConfig
+                        );
                 
-                        // Write vite config to project directory
-                        await fs.writeFile(path.join(projectPath, 'vite.config.ts'), viteConfigContent);
+                        // Use local installation of dependencies
+                        const env = {
+                            ...Process.env,
+                            VITE_ROOT: absoluteProjectPath,
+                            VITE_USER_NODE_ENV: 'development',
+                            NODE_ENV: 'development',
+                            VITE_CWD: absoluteProjectPath,
+                            PWD: absoluteProjectPath,
+                            HOME: absoluteProjectPath,
+                            npm_config_prefix: absoluteProjectPath,
+                            PATH: `${path.join(absoluteProjectPath, 'node_modules', '.bin')}${path.delimiter}${Process.env.PATH}`
+                        };
                 
-                        // Ensure .vite goes into node_modules by setting working directory
-                        const devServer = spawn('npx', ['vite', 'serve', '.', '--host'], {
-                            cwd: projectPath,
-                            shell: true,
-                            env: { 
-                                ...Process.env,
-                                FORCE_COLOR: 'true',
-                                VITE_CWD: projectPath,
-                                PWD: projectPath,
-                                NODE_ENV: 'development',
-                                // Force vite to use project's node_modules
-                                NODE_PATH: path.join(projectPath, 'node_modules')
+                        // Execute vite directly from node_modules
+                        const viteProcess = spawn(
+                            'node', 
+                            [
+                                path.join(absoluteProjectPath, 'node_modules', 'vite', 'bin', 'vite.js'),
+                                '--config', path.join(absoluteProjectPath, 'vite.config.ts'),
+                                '--clearScreen=false'
+                            ],
+                            {
+                                cwd: absoluteProjectPath,
+                                env,
+                                stdio: 'pipe',
+                                shell: true
                             }
-                        });
+                        );
                 
                         let serverStarted = false;
-                        let serverUrl = '';
                 
-                        devServer.stdout?.on('data', (data: Buffer) => {
+                        viteProcess.stdout?.on('data', (data: Buffer) => {
                             const output = data.toString();
-                            console.log('Server output:', output);
-                            
-                            if (output.includes('Local:') || output.includes('Network:')) {
-                                const urlMatch = output.match(/https?:\/\/\S+/);
-                                if (urlMatch) {
-                                    serverUrl = urlMatch[0];
-                                    serverStarted = true;
+                            console.log('Vite output:', output);
+                            socket.emit('terminal:output', { data: output });
+                
+                            if (output.includes('Local:')) {
+                                serverStarted = true;
+                                const match = output.match(/http:\/\/localhost:\d+/);
+                                if (match) {
+                                    const url = match[0];
                                     socket.emit('terminal:output', { 
-                                        data: `\nServer running at ${serverUrl}\n` 
+                                        data: `\nServer running at: ${url}\n` 
                                     });
                                 }
                             }
-                            socket.emit('terminal:output', { data: output });
                         });
                 
-                        devServer.stderr?.on('data', (data: Buffer) => {
+                        viteProcess.stderr?.on('data', (data: Buffer) => {
                             const output = data.toString();
+                            console.error('Vite error:', output);
                             socket.emit('terminal:output', { data: output });
                         });
                 
-                        devServer.on('close', (code: number | null) => {
+                        viteProcess.on('close', (code: number | null) => {
                             if (!serverStarted) {
                                 socket.emit('terminal:output', { 
-                                    data: '\nDev server failed to start. Check for port conflicts.\n' 
+                                    data: '\nServer failed to start. Check the configuration.\n' 
                                 });
                             }
-                            socket.emit('terminal:output', { 
-                                data: `\nDev server stopped with code ${code}\n` 
-                            });
                             socket.emit('terminal:ready');
                         });
                 
-                        // Clean up on socket disconnect
+                        // Cleanup on disconnect
                         socket.on('disconnect', () => {
-                            devServer.kill();
+                            viteProcess.kill();
                         });
                 
                     } catch (error) {
-                        console.error('Error starting dev server:', error);
+                        console.error('Error starting Vite:', error);
                         socket.emit('terminal:output', { 
                             data: `Error: ${error instanceof Error ? error.message : 'Unknown error'}\n` 
                         });
@@ -542,6 +561,8 @@ export function setupTerminalSocket(io: Server) {
                     }
                     return;
                 }
+                
+    
         
                 // Handle all other npm commands
                 if (command.startsWith('npm')) {
