@@ -32,7 +32,18 @@ const corsOptions = {
 app.use(cors(corsOptions));
 app.use(express.json({ limit: '50mb' })); // Increased limit for file uploads
 app.use(express.static(path.join(__dirname, "public")));
-
+app.use((err: Error, req: Request, res: Response, next: express.NextFunction) => {
+  console.error('Unhandled error:', err);
+  console.error('Stack trace:', err.stack);
+  console.error('Request path:', req.path);
+  console.error('Request method:', req.method);
+  console.error('Request body:', req.body);
+  
+  res.status(500).json({
+    message: 'An unexpected error occurred',
+    error: err.message,
+  });
+});
 
 // MongoDB Connection
 const mongoUri: string | undefined = process.env.MONGO_URI;
